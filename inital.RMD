@@ -1,0 +1,198 @@
+```{r}
+#Clears global environment
+rm(list = ls())
+```
+
+```{r}
+#Imports diagnosis excel file
+library("readxl")
+data <- read_excel("Downloads/diagnosisFix.xlsm")
+```
+
+```{r}
+#Selects unique patients with ARDS
+library(sqldf)
+interest <- sqldf("select * from data where diagnosisstring LIKE '%ARDS%'")
+patients <- interest[!duplicated(interest$patientunitstayid),]
+```
+
+```{r}
+#Import lab data csv file
+labData <- readRDS("Downloads/lab (1).Rds")
+```
+
+```{r}
+#Subset labData with ARDS patients
+ARDSlabData <- subset(labData, patientunitstayid %in% patients$patientunitstayid)
+```
+
+```{r}
+#Obtain Labs with +60% patients that have data
+labs <- c()
+
+for(i in 1:length(unique(ARDSlabData$labname))){
+  patientsPerLab <- 0
+  patientsPerLab <- length(unique(subset(ARDSlabData, labname %in% unique(ARDSlabData$labname)[i])$patientunitstayid))/length(patients$patientunitstayid)
+  threshold = .6
+  if (patientsPerLab > threshold){
+    labs <- c(labs,as.character((unique(ARDSlabData$labname)[i]), max.levels = 0))
+  }
+}
+```
+
+```{r}
+#Subset 
+library(reshape2)
+dat <- aggregate(ARDSlabData$labresult,by=list(Patient=ARDSlabData$patientunitstayid,LabName=ARDSlabData$labname),data=ARDSlabData,FUN=mean)
+ARDSPatientsLab <- dcast(dat, Patient ~ LabName)
+ARDSPatientsLab <- ARDSPatientsLab[, which(colMeans(!is.na(ARDSPatientsLab)) > 0.6)]
+```
+
+```{r}
+#Replace NAs with mean of column
+library(zoo)
+ARDSPatientsLab <- na.aggregate(ARDSPatientsLab)
+```
+
+```{r}
+#Obtain patient ages (Control/ARDS)
+library(dplyr)
+patientInfo <- read.csv('Downloads/patient.csv')
+```
+
+```{r}
+#Extract ages and change >89 to 90
+patientAges <- patientInfo %>% select(patientunitstayid,age)
+patientAges <- patientAges %>% mutate(age = ifelse(age == "> 89", 90, age))
+patientAges$age <- as.numeric(patientAges$age)
+```
+
+```{r}
+#Obtain apache scores (Control/ARDS)
+patientApache <- read.csv('Downloads/apachePatientResult.csv')
+```
+
+```{r}
+#Extract apache scores and replace APACHE -1 to NA
+patientApacheScores <- patientApache %>% select(patientunitstayid,apachescore)
+patientApacheScores$apachescore[which(patientApacheScores$apachescore == -1)] <- NA
+```
+
+
+```{r}
+#Obtaining ARDS patient info (apache and age) and control patients and patient info (apache and age)
+ARDS_patients <- merge(patientApacheScores[patientApacheScores$patientunitstayid %in% ARDSPatientsLab$Patient,][!duplicated(patientApacheScores$patientunitstayid),],patientAges[patientAges$patientunitstayid %in% ARDSPatientsLab$Patient,], by = c("patientunitstayid"))
+
+control_patients <- merge(patientApacheScores[!patientApacheScores$patientunitstayid %in% ARDSPatientsLab$Patient,][!duplicated(patientApacheScores$patientunitstayid),],patientAges[!patientAges$patientunitstayid %in% ARDSPatientsLab$Patient,], by = c("patientunitstayid"))
+```
+
+```{r}
+ARDS_patients$Group <- 1
+control_patients$Group <- 0
+```
+
+```{r}
+mydata <- rbind(ARDS_patients,control_patients)
+mydata <- na.omit(mydata)
+```
+
+```{r}
+library(MatchIt)
+set.seed(12345)
+match.it <- matchit(Group ~ age + apachescore, data = mydata, method = "nearest", ratio = 1)
+```
+```{r}
+library(knitr)
+a <- summary(match.it)
+#plot(match.it, type = 'jitter', interactive = FALSE)
+```
+```{r}
+df.match <- match.data(match.it)[1:ncol(mydata)]
+```
+
+```{r}
+ards_group <- df.match[df.match$Group == 1,]
+control_group <- df.match[df.match$Group == 0,]
+```
+
+```{r}
+library(tidyverse)
+ggplot(control_group) + 
+  geom_histogram(aes(x = age), binwidth = 1, color = "black", fill = "lightgray", boundary = 0) + 
+  xlab("Age") + 
+  ylab("Frequency") +
+  ggtitle("Age Distribution of Control Patients") +
+  xlim(0, 100) 
+
+ggplot(ards_group) + 
+  geom_histogram(aes(x = age), binwidth = 1, color = "black", fill = "lightgray", boundary = 0) + 
+  xlab("Age") + 
+  ylab("Frequency") +
+  ggtitle("Age Distribution of ARDS Patients") +
+  xlim(0, 100) 
+
+```
+
+```{r}
+ggplot(control_group) + 
+  geom_histogram(aes(x = apachescore), binwidth = 1, color = "black", fill = "lightgray", boundary = 0) + 
+  xlab("Age") + 
+  ylab("Frequency") +
+  ggtitle("Age Distribution of Control Patients") +
+  xlim(0, 100) 
+
+ggplot(ards_group) + 
+  geom_histogram(aes(x = apachescore), binwidth = 1, color = "black", fill = "lightgray", boundary = 0) + 
+  xlab("Age") + 
+  ylab("Frequency") +
+  ggtitle("Age Distribution of ARDS Patients") +
+  xlim(0, 100) 
+```
+
+```{r}
+#Get data for control
+ControllabData <- subset(labData, patientunitstayid %in% control_group$patientunitstayid)
+dat2 <- aggregate(ControllabData$labresult,by=list(Patient=ControllabData$patientunitstayid,LabName=ControllabData$labname),data=ControllabData,FUN=mean)
+ControlPatientsLab <- dcast(dat2, Patient ~ LabName)
+
+cols_to_keep <- intersect(colnames(ARDSPatientsLab),colnames(ControlPatientsLab))
+ControlPatientsLab <- ControlPatientsLab[,cols_to_keep, drop=FALSE]
+ControlPatientsLab <- na.aggregate(ControlPatientsLab)
+```
+
+```{r}
+#Add ARDSPositive column
+ARDSPatientsLab$ARDSPositive <- "True"
+ControlPatientsLab$ARDSPositive <- "False"
+```
+
+```{r}
+#Apply logistic regression
+logisticData <- rbind(ARDSPatientsLab,ControlPatientsLab)
+logisticData$Patient <- NULL 
+logisticData$ARDSPositive <- as.factor(logisticData$ARDSPositive)
+rows <- sample(nrow(logisticData))
+logisticData <- logisticData[rows,]
+logistic <- glm(ARDSPositive ~ .,data=logisticData, family="binomial")
+```
+
+```{r}
+predicted.data <- data.frame(probability.of.ards = logistic$fitted.values, ARDSPositive = logisticData$ARDSPositive)
+predicted.data <- predicted.data[order(predicted.data$probability.of.ards, decreasing = FALSE),]
+predicted.data$rank <- 1:nrow(predicted.data)
+
+ggplot(data=predicted.data, aes(x=rank, y=probability.of.ards)) +
+  geom_point(aes(color=ARDSPositive), alpha=1, shape=4, stroke=2) +
+  xlab("Index") +
+  ylab("Predicted probability of getting heart disease")
+
+```
+
+```{r}
+summary(logistic)
+```
+
+```{r}
+predicted.classes <- ifelse(probabilities > 0.5, "pos", "neg")
+mean(predicted.classes == logisticData$ARDSPositive)
+```
